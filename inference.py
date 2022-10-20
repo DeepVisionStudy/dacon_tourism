@@ -16,31 +16,31 @@ PATH_DATA = osp.join(PATH_BASE, 'data')
 
 
 def inference(model, data_loader, device):
-	model = model.eval()
-	preds_arr = []
-	preds_arr2 = []
-	preds_arr3 = []
-	for d in tqdm(data_loader):
-		with torch.no_grad():
-			input_ids = d["input_ids"].to(device)
-			attention_mask = d["attention_mask"].to(device)
-			pixel_values = d['pixel_values'].to(device)
+    model = model.eval()
+    preds_arr = []
+    preds_arr2 = []
+    preds_arr3 = []
+    for d in tqdm(data_loader):
+        with torch.no_grad():
+            input_ids = d["input_ids"].to(device)
+            attention_mask = d["attention_mask"].to(device)
+            pixel_values = d['pixel_values'].to(device)
 
-			outputs, outputs2, outputs3 = model(
-				input_ids=input_ids,
-				attention_mask=attention_mask,
-				pixel_values=pixel_values
-			)
+            outputs, outputs2, outputs3 = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                pixel_values=pixel_values
+            )
 
-			_, preds = torch.max(outputs, dim=1)
-			_, preds2 = torch.max(outputs2, dim=1)
-			_, preds3 = torch.max(outputs3, dim=1)
+            _, preds = torch.max(outputs, dim=1)
+            _, preds2 = torch.max(outputs2, dim=1)
+            _, preds3 = torch.max(outputs3, dim=1)
 
-			preds_arr.append(preds.cpu().numpy())
-			preds_arr2.append(preds2.cpu().numpy())
-			preds_arr3.append(preds3.cpu().numpy())
+            preds_arr.append(preds.cpu().numpy())
+            preds_arr2.append(preds2.cpu().numpy())
+            preds_arr3.append(preds3.cpu().numpy())
 
-	return preds_arr, preds_arr2, preds_arr3
+    return preds_arr, preds_arr2, preds_arr3
 
 
 def get_parser():
@@ -60,14 +60,14 @@ def main(args):
 
     tokenizer = AutoTokenizer.from_pretrained(args.text_model)
     feature_extractor = AutoFeatureExtractor.from_pretrained(args.image_model)
-    
+
     eval_data_loader = create_data_loader_test(df, tokenizer, feature_extractor, args.max_len)
 
     model = TourClassifier(
-		n_classes1=6, n_classes2=18, n_classes3=128,
-		text_model_name=args.text_model, image_model_name=args.image_model, device=device
-	).to(device)
-    
+        n_classes1=6, n_classes2=18, n_classes3=128,
+        text_model_name=args.text_model, image_model_name=args.image_model, device=device
+    ).to(device)
+
     preds_arr, preds_arr2, preds_arr3 = inference(model, eval_data_loader, device)
 
     sample_submission = pd.read_csv(osp.join(PATH_DATA, 'sample_submission.csv'))
