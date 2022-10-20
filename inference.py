@@ -45,28 +45,32 @@ def inference(model, data_loader, device):
 
 def get_parser():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--exp', type=int, default=0)
+    parser.add_argument('--epoch', type=int, default=1)
     args = parser.parse_args()
     args.work_dir_exp = f'./work_dirs/exp{args.exp}'
+    args.ckpt_dir = osp.join(args.work_dir_exp, f'epoch{args.epoch}.pt')
     return args
 
 
-def main(args):
+def main(args, train_config):
     train_df = pd.read_csv(osp.join(PATH_DATA, 'train.csv'))
     cat3_labels = sorted(list(set(train_df['cat3'].values.tolist())))
 
     device = torch.device("cuda:0")
     df = pd.read_csv(osp.join(PATH_DATA, 'test.csv'))
 
-    tokenizer = AutoTokenizer.from_pretrained(args.text_model)
-    feature_extractor = AutoFeatureExtractor.from_pretrained(args.image_model)
+    tokenizer = AutoTokenizer.from_pretrained(train_config.text_model)
+    feature_extractor = AutoFeatureExtractor.from_pretrained(train_config.image_model)
 
-    eval_data_loader = create_data_loader_test(df, tokenizer, feature_extractor, args.max_len)
+    eval_data_loader = create_data_loader_test(df, tokenizer, feature_extractor, train_config.max_len)
 
     model = TourClassifier(
         n_classes1=6, n_classes2=18, n_classes3=128,
-        text_model_name=args.text_model, image_model_name=args.image_model, device=device
+        text_model_name=train_config.text_model, image_model_name=train_config.image_model, device=device
     ).to(device)
+    model.load_state_dict(torch.load(args.ckpt_dir))
 
     preds_arr, preds_arr2, preds_arr3 = inference(model, eval_data_loader, device)
 
@@ -74,11 +78,12 @@ def main(args):
     for i in range(len(preds_arr3)):
         sample_submission.loc[i,'cat3'] = cat3_labels[preds_arr3[i][0]]
 
-    sample_submission.to_csv(osp.join(args.work_dir_exp, 'submission.csv'), index=False)
+    sample_submission.to_csv(
+        osp.join(args.work_dir_exp, f'submit_exp{args.exp}_epoch{args.epoch}.csv'), index=False)
 
 
 if __name__ == '__main__':
     args = get_parser()
-    args = load_config(osp.join(args.work_dir_exp, 'config.yaml'))
     set_seeds(args.seed)
-    main(args)
+    train_config = load_config(osp.join(args.work_dir_exp, 'config.yaml'))
+    main(args, train_config)

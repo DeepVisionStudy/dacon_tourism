@@ -21,10 +21,8 @@ PATH_BASE = './'
 PATH_DATA = osp.join(PATH_BASE, 'data')
 
 
-def train_epoch(
-    model, data_loader, loss_fn, optimizer, scheduler, n_examples, epoch,
-    device, lambda_cat1, lambda_cat2, lambda_cat3, val_freq
-    ):
+def train_epoch(model, data_loader, loss_fn, optimizer, scheduler, n_examples, epoch,
+                device, lambda_cat1, lambda_cat2, lambda_cat3, val_freq):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -147,16 +145,17 @@ def get_parser():
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--fold', type=int, default=0)
     parser.add_argument('--val_freq', type=int, default=50)
+    parser.add_argument('--save_freq', type=int, default=5)
     parser.add_argument('--work_dir', type=str, default='./work_dirs')
 
     parser.add_argument('--text_model', type=str, default="klue/roberta-small")
     # parser.add_argument('--image_model', type=str, default="google/vit-base-patch16-224-in21k")
-    # parser.add_argument('--image_model', type=str, default="microsoft/beit-base-patch16-224-pt22k-ft22k")
-    parser.add_argument('--image_model', type=str, default="microsoft/beit-base-patch16-384")
+    parser.add_argument('--image_model', type=str, default="microsoft/beit-base-patch16-224-pt22k-ft22k")
+    # parser.add_argument('--image_model', type=str, default="microsoft/beit-base-patch16-384")
     parser.add_argument('--max_len', type=int, default=256)
 
     parser.add_argument('--epochs', type=int, default=1)
-    parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--num_workers', type=int, default=8)
 
     parser.add_argument('--learning_rate', type=float, default=3e-5)
@@ -203,9 +202,9 @@ def main(args):
     )
 
     max_acc = 0
-    for epoch in range(args.epochs):
+    for epoch in range(1, args.epochs + 1):
         print('-' * 10)
-        print(f'Epoch {epoch}/{args.epochs-1}')
+        print(f'Epoch {epoch}/{args.epochs}')
         print('-' * 10)
         train_acc, train_loss = train_epoch(
             model, train_data_loader, loss_fn, optimizer, scheduler, len(train), epoch, args.device,
@@ -215,7 +214,7 @@ def main(args):
             model, valid_data_loader, loss_fn, args.device,
             args.lambda_cat1, args.lambda_cat2, args.lambda_cat3,
         )
-        if validate_acc > max_acc:
+        if validate_acc > max_acc or (epoch % args.save_freq == 0):
             max_acc = validate_acc
             torch.save(
                 model.state_dict(),
