@@ -1,7 +1,9 @@
 import argparse
+import numpy as np
 import pandas as pd
 import os.path as osp
 from tqdm import tqdm
+from sklearn.metrics import accuracy_score, f1_score, classification_report
 
 import torch
 from transformers import AutoTokenizer, AutoFeatureExtractor
@@ -31,20 +33,20 @@ def inference(model, data_loader, device):
                 attention_mask=attention_mask,
                 pixel_values=pixel_values
             )
-
             _, preds = torch.max(outputs, dim=1)
             _, preds2 = torch.max(outputs2, dim=1)
             _, preds3 = torch.max(outputs3, dim=1)
 
-            preds_arr.append(preds.cpu().numpy())
-            preds_arr2.append(preds2.cpu().numpy())
-            preds_arr3.append(preds3.cpu().numpy())
+            preds_arr.append(preds.cpu().numpy()[0])
+            preds_arr2.append(preds2.cpu().numpy()[0])
+            preds_arr3.append(preds3.cpu().numpy()[0])
 
     return preds_arr, preds_arr2, preds_arr3
 
 
 def get_parser():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--mode', type=str, default='test')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--exp', type=int, default=0)
     parser.add_argument('--epoch', type=int, default=1)
@@ -59,7 +61,12 @@ def main(args, train_config):
     cat3_labels = sorted(list(set(train_df['cat3'].values.tolist())))
 
     device = torch.device("cuda:0")
-    df = pd.read_csv(osp.join(PATH_DATA, 'test.csv'))
+    
+    if args.mode == 'valid':
+        df = pd.read_csv(osp.join(PATH_DATA, 'train_5fold.csv'))
+        df = df[df["kfold"] == train_config.fold].reset_index(drop=True)
+    elif args.mode == 'test':
+        df = pd.read_csv(osp.join(PATH_DATA, 'test.csv'))
 
     tokenizer = AutoTokenizer.from_pretrained(train_config.text_model)
     feature_extractor = AutoFeatureExtractor.from_pretrained(train_config.image_model)
@@ -68,18 +75,28 @@ def main(args, train_config):
 
     model = TourClassifier(
         n_classes1=6, n_classes2=18, n_classes3=128,
-        text_model_name=train_config.text_model, image_model_name=train_config.image_model, device=device
+        text_model_name=train_config.text_model, image_model_name=train_config.image_model, device=device,
+        dropout=train_config.dropout,
     ).to(device)
     model.load_state_dict(torch.load(args.ckpt_dir))
 
     preds_arr, preds_arr2, preds_arr3 = inference(model, eval_data_loader, device)
+    
+    if args.mode == 'valid':
+        for col, arr in zip(['cat1','cat2','cat3'], [preds_arr, preds_arr2, preds_arr3]):
+            pred = np.array(arr)
+            gt = df[col].values
+            acc = accuracy_score(gt, pred)
+            f1 = f1_score(gt, pred, average='weighted')
+            print(f"[{col}] acc: {round(acc,4)}, f1_acc: {round(f1,4)}")
+            # print(classification_report(gt, pred))
 
-    sample_submission = pd.read_csv(osp.join(PATH_DATA, 'sample_submission.csv'))
-    for i in range(len(preds_arr3)):
-        sample_submission.loc[i,'cat3'] = cat3_labels[preds_arr3[i][0]]
-
-    sample_submission.to_csv(
-        osp.join(args.work_dir_exp, f'submit_exp{args.exp}_epoch{args.epoch}.csv'), index=False)
+    elif args.mode == 'test':
+        sample_submission = pd.read_csv(osp.join(PATH_DATA, 'sample_submission.csv'))
+        for i in range(len(preds_arr3)):
+            sample_submission.loc[i, 'cat3'] = cat3_labels[preds_arr3[i]]
+        sample_submission.to_csv(
+            osp.join(args.work_dir_exp, f'submit_exp{args.exp}_epoch{args.epoch}.csv'), index=False)
 
 
 if __name__ == '__main__':
