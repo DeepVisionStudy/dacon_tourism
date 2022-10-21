@@ -12,7 +12,7 @@ from transformers import AutoTokenizer, AutoFeatureExtractor
 from transformers.optimization import get_cosine_schedule_with_warmup
 
 from dataset import create_data_loader
-from model import TourClassifier
+from model import TourClassifier, TourClassifier_Continuous
 from utils import set_seeds, get_exp_dir, save_config, AverageMeter, calc_tour_acc, timeSince
 from set_wandb import wandb_init
 
@@ -153,6 +153,7 @@ def get_parser():
     parser.add_argument('--image_model', type=str, default="microsoft/beit-base-patch16-224-pt22k-ft22k")
     # parser.add_argument('--image_model', type=str, default="microsoft/beit-base-patch16-384")
     parser.add_argument('--max_len', type=int, default=256)
+    parser.add_argument('--dropout', type=float, default=0.1)
 
     parser.add_argument('--epochs', type=int, default=1)
     parser.add_argument('--batch_size', type=int, default=32)
@@ -188,9 +189,10 @@ def main(args):
     valid_data_loader = create_data_loader(
         valid, tokenizer, feature_extractor, args.max_len, args.batch_size, args.num_workers)
 
-    model = TourClassifier(
+    model = TourClassifier_Continuous(
         n_classes1=6, n_classes2=18, n_classes3=128,
-        text_model_name=args.text_model, image_model_name=args.image_model, device=args.device
+        text_model_name=args.text_model, image_model_name=args.image_model, device=args.device,
+        dropout=args.dropout
     ).to(args.device)
     loss_fn = nn.CrossEntropyLoss().to(args.device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
