@@ -93,7 +93,7 @@ def train_epoch(model, data_loader, loss_fn, optimizer, scheduler, n_examples, e
             )
 
     wandb.log({
-        'train/loss': losses.avg, 'train/acc': accuracies.avg, 'train/f1': f1_accuracies.avg
+        'train/loss': round(losses.avg,4), 'train/acc': round(accuracies.avg,4), 'train/f1': round(f1_accuracies.avg,4)
     }, commit=False)
 
     return correct_predictions.double() / n_examples, losses.avg
@@ -134,7 +134,7 @@ def validate(model, data_loader, loss_fn, device, lambda_cat1, lambda_cat2, lamb
     acc, f1_acc = calc_tour_acc(outputs3_arr, cats3_arr)
 
     wandb.log({
-        'valid/loss': np.mean(losses), 'valid/acc': acc, 'valid/f1': f1_acc
+        'valid/loss': round(np.mean(losses),4), 'valid/acc': round(acc,4), 'valid/f1': round(f1_acc,4)
     })
 
     return f1_acc, np.mean(losses)
@@ -163,7 +163,8 @@ def get_parser():
     parser.add_argument('--lambda_cat2', type=float, default=0.1)
     parser.add_argument('--lambda_cat3', type=float, default=0.85)
 
-    parser.add_argument('--warmup_ratio', type=float, default=0.1)
+    parser.add_argument('--warmup_cycle', type=int, default=4)
+    parser.add_argument('--warmup_ratio', type=float, default=0.0125)
     args = parser.parse_args()
     args.work_dir_exp = get_exp_dir(args.work_dir)
     args.text_model_name = args.text_model.split('/')[-1]
@@ -198,7 +199,8 @@ def main(args):
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=int(total_steps * args.warmup_ratio),
-        num_training_steps=total_steps
+        num_training_steps=total_steps,
+        num_cycles=1/args.warmup_cycle,
     )
 
     max_acc = 0
