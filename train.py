@@ -163,7 +163,8 @@ def get_parser():
     parser.add_argument('--lambda_cat2', type=float, default=0.1)
     parser.add_argument('--lambda_cat3', type=float, default=0.85)
 
-    parser.add_argument('--warmup_ratio', type=float, default=0.1)
+    parser.add_argument('--warmup_cycle', type=int, default=4)
+    parser.add_argument('--warmup_ratio', type=float, default=0.0125)
     args = parser.parse_args()
     args.work_dir_exp = get_exp_dir(args.work_dir)
     args.text_model_name = args.text_model.split('/')[-1]
@@ -198,7 +199,8 @@ def main(args):
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=int(total_steps * args.warmup_ratio),
-        num_training_steps=total_steps
+        num_training_steps=total_steps,
+        num_cycles=1/args.warmup_cycle,
     )
 
     max_acc = 0
