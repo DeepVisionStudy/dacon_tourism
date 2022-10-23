@@ -2,5 +2,6 @@ __pycache__
 data/
 wandb/
 work_dirs/
+ensemble/
 EDA.ipynb
 set_wandb.py
