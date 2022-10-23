@@ -10,9 +10,11 @@ import torch
 import torch.nn as nn
 from transformers import AutoTokenizer, AutoFeatureExtractor
 from transformers.optimization import get_cosine_schedule_with_warmup
+from adamp import AdamP
 
 from dataset import create_data_loader
-from model import TourClassifier
+from loss import FocalLoss
+from model import TourClassifier, TourClassifier_Continuous
 from utils import set_seeds, get_exp_dir, save_config, AverageMeter, calc_tour_acc, timeSince
 from set_wandb import wandb_init
 
@@ -33,6 +35,7 @@ def train_epoch(model, data_loader, loss_fn, optimizer, scheduler, n_examples, e
 
     model = model.train()
     wandb.watch(model)
+    # wandb.log({'learning_rate': round(scheduler.get_last_lr()[0],4)}, commit=False)
     correct_predictions = 0
     for step, d in enumerate(data_loader):
         data_time.update(time.time() - end)
@@ -137,7 +140,7 @@ def validate(model, data_loader, loss_fn, device, lambda_cat1, lambda_cat2, lamb
         'valid/loss': round(np.mean(losses),4), 'valid/acc': round(acc,4), 'valid/f1': round(f1_acc,4)
     })
 
-    return f1_acc, np.mean(losses)
+    return acc, f1_acc, np.mean(losses)
 
 
 def get_parser():
@@ -148,24 +151,25 @@ def get_parser():
     parser.add_argument('--save_freq', type=int, default=5)
     parser.add_argument('--work_dir', type=str, default='./work_dirs')
 
+    parser.add_argument('--continuous', action='store_true')
     parser.add_argument('--text_model', type=str, default="klue/roberta-small")
-    # parser.add_argument('--image_model', type=str, default="google/vit-base-patch16-224-in21k")
-    parser.add_argument('--image_model', type=str, default="microsoft/beit-base-patch16-224-pt22k-ft22k")
-    # parser.add_argument('--image_model', type=str, default="microsoft/beit-base-patch16-384")
+    parser.add_argument('--image_model', type=str, default="microsoft/beit-base-patch16-224-pt22k-ft22k") # "google/vit-base-patch16-224-in21k" "microsoft/beit-base-patch16-384"
     parser.add_argument('--max_len', type=int, default=256)
+    parser.add_argument('--dropout', type=float, default=0.1)
 
-    parser.add_argument('--epochs', type=int, default=1)
+    parser.add_argument('--epochs', type=int, default=20)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--num_workers', type=int, default=8)
 
-    parser.add_argument('--learning_rate', type=float, default=3e-5)
+    parser.add_argument('--learning_rate', type=float, default=1e-5)
     parser.add_argument('--lambda_cat1', type=float, default=0.05)
     parser.add_argument('--lambda_cat2', type=float, default=0.1)
     parser.add_argument('--lambda_cat3', type=float, default=0.85)
 
-    parser.add_argument('--warmup_cycle', type=int, default=4)
-    parser.add_argument('--warmup_ratio', type=float, default=0.0125)
+    parser.add_argument('--warmup_cycle', type=int, default=2)
+    parser.add_argument('--warmup_ratio', type=float, default=0.05)
     args = parser.parse_args()
+
     args.work_dir_exp = get_exp_dir(args.work_dir)
     args.text_model_name = args.text_model.split('/')[-1]
     args.image_model_name = args.image_model.split('/')[-1]
@@ -188,22 +192,31 @@ def main(args):
     valid_data_loader = create_data_loader(
         valid, tokenizer, feature_extractor, args.max_len, args.batch_size, args.num_workers)
 
-    model = TourClassifier(
+    if args.continuous:
+        model = TourClassifier_Continuous
+    else:
+        model = TourClassifier
+    model = model(
         n_classes1=6, n_classes2=18, n_classes3=128,
-        text_model_name=args.text_model, image_model_name=args.image_model, device=args.device
+        text_model_name=args.text_model, image_model_name=args.image_model, device=args.device,
+        dropout=args.dropout
     ).to(args.device)
-    loss_fn = nn.CrossEntropyLoss().to(args.device)
+
+    # loss_fn = nn.CrossEntropyLoss().to(args.device)
+    loss_fn = FocalLoss().to(args.device)
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
+    # optimizer = AdamP(model.parameters(), lr=args.learning_rate)
 
     total_steps = len(train_data_loader) * args.epochs
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=int(total_steps * args.warmup_ratio),
         num_training_steps=total_steps,
-        num_cycles=1/args.warmup_cycle,
+        num_cycles=(1/args.warmup_cycle),
     )
 
-    max_acc = 0
+    max_f1 = 0
     for epoch in range(1, args.epochs + 1):
         print('-' * 10)
         print(f'Epoch {epoch}/{args.epochs}')
@@ -212,23 +225,25 @@ def main(args):
             model, train_data_loader, loss_fn, optimizer, scheduler, len(train), epoch, args.device,
             args.lambda_cat1, args.lambda_cat2, args.lambda_cat3, args.val_freq
         )
-        validate_acc, validate_loss = validate(
+        validate_acc, validate_f1, validate_loss = validate(
             model, valid_data_loader, loss_fn, args.device,
             args.lambda_cat1, args.lambda_cat2, args.lambda_cat3,
         )
-        if validate_acc > max_acc or (epoch % args.save_freq == 0):
-            max_acc = validate_acc
-            torch.save(
-                model.state_dict(),
-                osp.join(args.work_dir_exp, f'epoch{epoch}.pt'))
+        if validate_f1 > max_f1:
+            max_f1 = validate_f1
+            torch.save(model.state_dict(), osp.join(args.work_dir_exp, 'best.pt'))
+        if epoch % args.save_freq == 0:
+            torch.save(model.state_dict(), osp.join(args.work_dir_exp, f'epoch{epoch}.pt'))
         print(f'Train loss {train_loss} accuracy {train_acc}')
-        print(f'Validate loss {validate_loss} accuracy {validate_acc}')
+        print(f'Validate loss {validate_loss} accuracy {validate_acc} f1 {validate_f1}')
         print("")
 
 
 if __name__ == '__main__':
-    args = get_parser()
-    save_config(args, args.config_dir)
-    set_seeds(args.seed)
-    wandb_init(args)
-    main(args)
+    for fold in [0,1,2,3,4]:
+        args = get_parser()
+        args.fold = fold
+        save_config(args, args.config_dir)
+        set_seeds(args.seed)
+        wandb_init(args)
+        main(args)
