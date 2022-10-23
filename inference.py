@@ -120,14 +120,11 @@ def inference(model, data_loader, device, multi_label, mask_label):
 def get_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', type=str, default='test')
+    parser.add_argument('--path', nargs='+') # work_dirs/exp0/best.pt
     parser.add_argument('--multi_label', action='store_true')
     parser.add_argument('--mask_label', action='store_true')
     parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--exp', type=int, default=0)
-    parser.add_argument('--epoch', type=int, default=1)
     args = parser.parse_args()
-    args.work_dir_exp = f'./work_dirs/exp{args.exp}'
-    args.ckpt_dir = osp.join(args.work_dir_exp, f'epoch{args.epoch}.pt')
     return args
 
 
@@ -156,7 +153,7 @@ def main(args, train_config):
         text_model_name=train_config.text_model, image_model_name=train_config.image_model, device=device,
         dropout=train_config.dropout,
     ).to(device)
-    model.load_state_dict(torch.load(args.ckpt_dir))
+    model.load_state_dict(torch.load(osp.join(args.work_dir_exp, args.ckpt)))
 
     preds_arr, preds_arr2, preds_arr3 = inference(model, eval_data_loader, device, args.multi_label, args.mask_label)
     
@@ -174,7 +171,7 @@ def main(args, train_config):
         sample_submission = pd.read_csv(osp.join(PATH_DATA, 'sample_submission.csv'))
         for i in range(len(preds_arr3)):
             sample_submission.loc[i, 'cat3'] = cat3_labels[preds_arr3[i]]
-        save_path = f'submit_exp{args.exp}_epoch{args.epoch}'
+        save_path = f'submit_{args.exp}_' + args.ckpt.split('.')[0]
         if args.multi_label: save_path += '_multi'
         if args.mask_label: save_path += '_mask'
         sample_submission.to_csv(osp.join(args.work_dir_exp, save_path+'.csv'), index=False)
@@ -182,6 +179,12 @@ def main(args, train_config):
 
 if __name__ == '__main__':
     args = get_parser()
-    set_seeds(args.seed)
-    train_config = load_config(osp.join(args.work_dir_exp, 'config.yaml'))
-    main(args, train_config)
+    for i in range(len(args.path)):
+        path = args.path[i] # work_dirs/exp0/best.pt
+        args.exp = path.split('/')[-2] # exp0
+        args.ckpt = path.split('/')[-1] # best.pt
+        args.work_dir_exp = path[:-len(args.ckpt)-1] # work_dirs/exp0
+        
+        set_seeds(args.seed)
+        train_config = load_config(osp.join(args.work_dir_exp, 'config.yaml'))
+        main(args, train_config)
