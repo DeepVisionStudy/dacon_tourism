@@ -1,8 +1,9 @@
-import cv2
-import random
 import os.path as osp
+from PIL import Image
+
 import torch
 from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms
 
 PATH_BASE = './'
 PATH_DATA = osp.join(PATH_BASE, 'data')
@@ -18,6 +19,10 @@ class CategoryDataset(Dataset):
         self.tokenizer = tokenizer
         self.feature_extractor = feature_extractor
         self.max_len = max_len
+        self.transform = transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            # transforms.RandAugment(num_ops=2, magnitude=3),
+        ])
 	
     def __len__(self):
         return len(self.text)
@@ -36,10 +41,8 @@ class CategoryDataset(Dataset):
         )
         
         image_path = osp.join(PATH_DATA, str(self.image_path[item])[2:])
-        image = cv2.imread(image_path)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        if random.random() >= 0.5:
-            image = cv2.flip(image, 1) # horizontal flip
+        image = Image.open(image_path).convert('RGB')
+        image = self.transform(image)
         image_feature = self.feature_extractor(images=image, return_tensors="pt")
         
         cat = self.cats1[item]
@@ -101,8 +104,7 @@ class CategoryDataset_test(Dataset):
         )
         
         image_path = osp.join(PATH_DATA, str(self.image_path[item])[2:])
-        image = cv2.imread(image_path)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = Image.open(image_path).convert('RGB')
         image_feature = self.feature_extractor(images=image, return_tensors="pt")
         return {
             'input_ids': encoding['input_ids'].flatten(),
