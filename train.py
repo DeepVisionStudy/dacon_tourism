@@ -8,6 +8,7 @@ from tqdm import tqdm
 
 import torch
 import torch.nn as nn
+from torch.cuda.amp import autocast, GradScaler
 from transformers import AutoTokenizer, AutoFeatureExtractor
 from transformers.optimization import get_cosine_schedule_with_warmup
 from adamp import AdamP
@@ -24,7 +25,7 @@ PATH_DATA = osp.join(PATH_BASE, 'data')
 
 
 def train_epoch(model, data_loader, loss_fn, optimizer, scheduler, n_examples, epoch,
-                device, lambda_cat1, lambda_cat2, lambda_cat3, val_freq):
+                device, lambda_cat1, lambda_cat2, lambda_cat3, val_freq, scaler):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -48,23 +49,33 @@ def train_epoch(model, data_loader, loss_fn, optimizer, scheduler, n_examples, e
         cats2 = d["cats2"].to(device)
         cats3 = d["cats3"].to(device)
 
-        outputs, outputs2, outputs3 = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            pixel_values=pixel_values
-        )
-        _, preds = torch.max(outputs3, dim=1)
+        with autocast():
+            outputs, outputs2, outputs3 = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                pixel_values=pixel_values
+            )
+            _, preds = torch.max(outputs3, dim=1)
 
-        loss1 = loss_fn(outputs, cats1)
-        loss2 = loss_fn(outputs2, cats2)
-        loss3 = loss_fn(outputs3, cats3)
-        loss = loss1 * lambda_cat1 + loss2 * lambda_cat2 + loss3 * lambda_cat3
-        losses.update(loss.item(), batch_size)
-        loss.backward()
+            loss1 = loss_fn(outputs, cats1)
+            loss2 = loss_fn(outputs2, cats2)
+            loss3 = loss_fn(outputs3, cats3)
+            loss = loss1 * lambda_cat1 + loss2 * lambda_cat2 + loss3 * lambda_cat3
+            losses.update(loss.item(), batch_size)
+        
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
         nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
         scheduler.step()
         optimizer.zero_grad()
+
+        # loss.backward()
+        # nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        # optimizer.step()
+        # scheduler.step()
+        # optimizer.zero_grad()
 
         correct_predictions += torch.sum(preds == cats3)
         batch_time.update(time.time() - end)
@@ -152,8 +163,8 @@ def get_parser():
     parser.add_argument('--work_dir', type=str, default='./work_dirs')
 
     parser.add_argument('--continuous', action='store_true')
-    parser.add_argument('--text_model', type=str, default="klue/roberta-small")
-    parser.add_argument('--image_model', type=str, default="microsoft/beit-base-patch16-224-pt22k-ft22k") # "google/vit-base-patch16-224-in21k" "microsoft/beit-base-patch16-384"
+    parser.add_argument('--text_model', type=str, default="klue/roberta-base")
+    parser.add_argument('--image_model', type=str, default="google/vit-base-patch16-224-in21k") # microsoft/beit-base-patch16-224-pt22k-ft22k microsoft/beit-base-patch16-384
     parser.add_argument('--max_len', type=int, default=256)
     parser.add_argument('--dropout', type=float, default=0.1)
 
@@ -207,6 +218,8 @@ def main(args):
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
     # optimizer = AdamP(model.parameters(), lr=args.learning_rate)
+    
+    scaler = GradScaler()
 
     total_steps = len(train_data_loader) * args.epochs
     scheduler = get_cosine_schedule_with_warmup(
@@ -223,7 +236,7 @@ def main(args):
         print('-' * 10)
         train_acc, train_loss = train_epoch(
             model, train_data_loader, loss_fn, optimizer, scheduler, len(train), epoch, args.device,
-            args.lambda_cat1, args.lambda_cat2, args.lambda_cat3, args.val_freq
+            args.lambda_cat1, args.lambda_cat2, args.lambda_cat3, args.val_freq, scaler,
         )
         validate_acc, validate_f1, validate_loss = validate(
             model, valid_data_loader, loss_fn, args.device,
