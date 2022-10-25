@@ -15,7 +15,7 @@ from adamp import AdamP
 
 from dataset import create_data_loader
 from loss import FocalLoss
-from model import TourClassifier, TourClassifier_Continuous
+from model import TourClassifier, TourClassifier_Continuous, TourClassifier_Separate
 from utils import set_seeds, get_exp_dir, save_config, AverageMeter, calc_tour_acc, timeSince
 from set_wandb import wandb_init
 
@@ -36,7 +36,6 @@ def train_epoch(model, data_loader, loss_fn, optimizer, scheduler, n_examples, e
 
     model = model.train()
     wandb.watch(model)
-    # wandb.log({'learning_rate': round(scheduler.get_last_lr()[0],4)}, commit=False)
     correct_predictions = 0
     for step, d in enumerate(data_loader):
         data_time.update(time.time() - end)
@@ -45,10 +44,12 @@ def train_epoch(model, data_loader, loss_fn, optimizer, scheduler, n_examples, e
         input_ids = d["input_ids"].to(device)
         attention_mask = d["attention_mask"].to(device)
         pixel_values = d['pixel_values'].to(device)
+        # pixel_values = torch.zeros_like(d['pixel_values']).to(device)
+        
         cats1 = d["cats1"].to(device)
         cats2 = d["cats2"].to(device)
         cats3 = d["cats3"].to(device)
-
+        
         with autocast():
             outputs, outputs2, outputs3 = model(
                 input_ids=input_ids,
@@ -122,6 +123,7 @@ def validate(model, data_loader, loss_fn, device, lambda_cat1, lambda_cat2, lamb
             input_ids = d["input_ids"].to(device)
             attention_mask = d["attention_mask"].to(device)
             pixel_values = d['pixel_values'].to(device)
+
             cats1 = d["cats1"].to(device)
             cats2 = d["cats2"].to(device)
             cats3 = d["cats3"].to(device)
@@ -163,8 +165,10 @@ def get_parser():
     parser.add_argument('--work_dir', type=str, default='./work_dirs')
 
     parser.add_argument('--continuous', action='store_true')
+    parser.add_argument('--separate', action='store_true')
+    
     parser.add_argument('--text_model', type=str, default="klue/roberta-base")
-    parser.add_argument('--image_model', type=str, default="google/vit-base-patch16-224-in21k") # microsoft/beit-base-patch16-224-pt22k-ft22k microsoft/beit-base-patch16-384
+    parser.add_argument('--image_model', type=str, default="google/vit-base-patch16-224-in21k")
     parser.add_argument('--max_len', type=int, default=256)
     parser.add_argument('--dropout', type=float, default=0.1)
 
@@ -205,6 +209,8 @@ def main(args):
 
     if args.continuous:
         model = TourClassifier_Continuous
+    elif args.separate:
+        model = TourClassifier_Separate
     else:
         model = TourClassifier
     model = model(

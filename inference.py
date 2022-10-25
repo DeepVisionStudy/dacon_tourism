@@ -11,7 +11,7 @@ import torch.nn as nn
 from transformers import AutoTokenizer, AutoFeatureExtractor
 
 from dataset import create_data_loader_test
-from model import TourClassifier, TourClassifier_Continuous
+from model import TourClassifier, TourClassifier_Continuous, TourClassifier_Separate
 from utils import set_seeds, load_config
 
 
@@ -156,6 +156,8 @@ def main(args, train_config):
     eval_data_loader = create_data_loader_test(df, tokenizer, feature_extractor, train_config.max_len)
     if train_config.continuous:
         model = TourClassifier_Continuous
+    elif train_config.separate:
+        model = TourClassifier_Separate
     else:
         model = TourClassifier
     model = model(

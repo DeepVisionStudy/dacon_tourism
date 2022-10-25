@@ -26,9 +26,8 @@ class TourClassifier(nn.Module):
         text_output = self.text_model(input_ids=input_ids, attention_mask=attention_mask)
         image_output = self.image_model(pixel_values=pixel_values)
         concat_outputs = torch.cat([text_output.last_hidden_state, image_output.last_hidden_state], 1)
-        
+
         outputs = self.transformer_encoder(concat_outputs)
-        #cls token 
         outputs = outputs[:,0]
         output = self.drop(outputs)
 
@@ -76,7 +75,6 @@ class TourClassifier_Continuous(nn.Module):
         concat_outputs = torch.cat([text_output.last_hidden_state, image_output.last_hidden_state], 1)
         
         outputs = self.transformer_encoder(concat_outputs)
-        #cls token 
         outputs = outputs[:,0]
         output = self.drop(outputs)
 
@@ -94,4 +92,55 @@ class TourClassifier_Continuous(nn.Module):
             nn.LayerNorm(self.text_model.config.hidden_size),
             nn.Dropout(p=self.dropout_ratio),
             nn.ReLU(),
+        )
+
+
+class TourClassifier_Separate(nn.Module):
+    def __init__(self, n_classes1, n_classes2, n_classes3, text_model_name, image_model_name, device, dropout):
+        super(TourClassifier_Separate, self).__init__()
+        self.text_model = AutoModel.from_pretrained(text_model_name).to(device)
+        self.image_model = AutoModel.from_pretrained(image_model_name).to(device)
+        
+        self.text_model.gradient_checkpointing_enable()
+        self.image_model.gradient_checkpointing_enable()
+
+        self.dropout_ratio = dropout
+        self.drop = nn.Dropout(p=dropout)
+
+        self.text_cls = self._get_cls(n_classes1)
+        self.text_cls2 = self._get_cls(n_classes2)
+        self.text_cls3 = self._get_cls(n_classes3)
+
+        self.image_cls = self._get_cls(n_classes1)
+        self.image_cls2 = self._get_cls(n_classes2)
+        self.image_cls3 = self._get_cls(n_classes3)
+    
+    def forward(self, input_ids, attention_mask, pixel_values):
+        text_output = self.text_model(input_ids=input_ids, attention_mask=attention_mask)
+        image_output = self.image_model(pixel_values=pixel_values)
+
+        text_output = self.drop(text_output.pooler_output)
+        image_output = self.drop(image_output.pooler_output)
+
+        text_out1 = self.text_cls(text_output)
+        text_out2 = self.text_cls2(text_output)
+        text_out3 = self.text_cls3(text_output)
+
+        image_out1 = self.image_cls(image_output)
+        image_out2 = self.image_cls2(image_output)
+        image_out3 = self.image_cls3(image_output)
+
+        out1 = torch.add(text_out1, image_out1, alpha=0.2)
+        out2 = torch.add(text_out2, image_out2, alpha=0.2)
+        out3 = torch.add(text_out3, image_out3, alpha=0.2)
+
+        return out1, out2, out3
+    
+    def _get_cls(self, target_size):
+        return nn.Sequential(
+            nn.Linear(self.text_model.config.hidden_size, self.text_model.config.hidden_size),
+            nn.LayerNorm(self.text_model.config.hidden_size),
+            nn.Dropout(p=self.dropout_ratio),
+            nn.ReLU(),
+            nn.Linear(self.text_model.config.hidden_size, target_size),
         )
