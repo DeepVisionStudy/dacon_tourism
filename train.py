@@ -35,7 +35,7 @@ def train_epoch(model, data_loader, loss_fn, optimizer, scheduler, n_examples, e
     start = end = time.time()
 
     model = model.train()
-    wandb.watch(model)
+    # wandb.watch(model)
     correct_predictions = 0
     for step, d in enumerate(data_loader):
         data_time.update(time.time() - end)
@@ -163,6 +163,8 @@ def get_parser():
     parser.add_argument('--val_freq', type=int, default=50)
     parser.add_argument('--save_freq', type=int, default=5)
     parser.add_argument('--work_dir', type=str, default='./work_dirs')
+    
+    parser.add_argument('--df_ver', type=int, default=1)
 
     parser.add_argument('--continuous', action='store_true')
     parser.add_argument('--separate', action='store_true')
@@ -195,7 +197,11 @@ def get_parser():
 def main(args):
     args.device = torch.device("cuda:0")
 
-    df = pd.read_csv(osp.join(PATH_DATA, 'train_5fold.csv'))
+    if args.df_ver == 1:
+        df = 'train_5fold.csv'
+    elif args.df_ver == 2:
+        df = 'train_5fold_ver2.csv'
+    df = pd.read_csv(osp.join(PATH_DATA, df))
     train = df[df["kfold"] != args.fold].reset_index(drop=True)
     valid = df[df["kfold"] == args.fold].reset_index(drop=True)
 
