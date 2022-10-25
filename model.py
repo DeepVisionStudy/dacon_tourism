@@ -96,7 +96,7 @@ class TourClassifier_Continuous(nn.Module):
 
 
 class TourClassifier_Separate(nn.Module):
-    def __init__(self, n_classes1, n_classes2, n_classes3, text_model_name, image_model_name, device, dropout):
+    def __init__(self, n_classes1, n_classes2, n_classes3, text_model_name, image_model_name, device, dropout, alpha):
         super(TourClassifier_Separate, self).__init__()
         self.text_model = AutoModel.from_pretrained(text_model_name).to(device)
         self.image_model = AutoModel.from_pretrained(image_model_name).to(device)
@@ -107,13 +107,15 @@ class TourClassifier_Separate(nn.Module):
         self.dropout_ratio = dropout
         self.drop = nn.Dropout(p=dropout)
 
-        self.text_cls = self._get_cls(n_classes1)
-        self.text_cls2 = self._get_cls(n_classes2)
-        self.text_cls3 = self._get_cls(n_classes3)
+        self.text_cls = self._get_cls(n_classes1, self.text_model.config.hidden_size)
+        self.text_cls2 = self._get_cls(n_classes2, self.text_model.config.hidden_size)
+        self.text_cls3 = self._get_cls(n_classes3, self.text_model.config.hidden_size)
 
-        self.image_cls = self._get_cls(n_classes1)
-        self.image_cls2 = self._get_cls(n_classes2)
-        self.image_cls3 = self._get_cls(n_classes3)
+        self.image_cls = self._get_cls(n_classes1, self.image_model.config.hidden_size)
+        self.image_cls2 = self._get_cls(n_classes2, self.image_model.config.hidden_size)
+        self.image_cls3 = self._get_cls(n_classes3, self.image_model.config.hidden_size)
+
+        self.alpha = alpha
     
     def forward(self, input_ids, attention_mask, pixel_values):
         text_output = self.text_model(input_ids=input_ids, attention_mask=attention_mask)
@@ -130,17 +132,17 @@ class TourClassifier_Separate(nn.Module):
         image_out2 = self.image_cls2(image_output)
         image_out3 = self.image_cls3(image_output)
 
-        out1 = torch.add(text_out1, image_out1, alpha=0.2)
-        out2 = torch.add(text_out2, image_out2, alpha=0.2)
-        out3 = torch.add(text_out3, image_out3, alpha=0.2)
-
+        out1 = torch.add(text_out1, image_out1, alpha=self.alpha)
+        out2 = torch.add(text_out2, image_out2, alpha=self.alpha)
+        out3 = torch.add(text_out3, image_out3, alpha=self.alpha)
+        
         return out1, out2, out3
     
-    def _get_cls(self, target_size):
+    def _get_cls(self, target_size, hidden_size):
         return nn.Sequential(
-            nn.Linear(self.text_model.config.hidden_size, self.text_model.config.hidden_size),
-            nn.LayerNorm(self.text_model.config.hidden_size),
+            nn.Linear(hidden_size, hidden_size),
+            nn.LayerNorm(hidden_size),
             nn.Dropout(p=self.dropout_ratio),
             nn.ReLU(),
-            nn.Linear(self.text_model.config.hidden_size, target_size),
+            nn.Linear(hidden_size, target_size),
         )

@@ -168,6 +168,7 @@ def get_parser():
 
     parser.add_argument('--continuous', action='store_true')
     parser.add_argument('--separate', action='store_true')
+    parser.add_argument('--separate_alpha', type=float, default=0.2)
     
     parser.add_argument('--text_model', type=str, default="klue/roberta-base")
     parser.add_argument('--image_model', type=str, default="google/vit-base-patch16-224-in21k")
@@ -214,16 +215,23 @@ def main(args):
         valid, tokenizer, feature_extractor, args.max_len, args.batch_size, args.num_workers)
 
     if args.continuous:
-        model = TourClassifier_Continuous
+        model = TourClassifier_Continuous(
+            n_classes1=6, n_classes2=18, n_classes3=128,
+            text_model_name=args.text_model, image_model_name=args.image_model, device=args.device,
+            dropout=args.dropout,
+        ).to(args.device)
     elif args.separate:
-        model = TourClassifier_Separate
+        model = TourClassifier_Separate(
+            n_classes1=6, n_classes2=18, n_classes3=128,
+            text_model_name=args.text_model, image_model_name=args.image_model, device=args.device,
+            dropout=args.dropout, alpha=args.separate_alpha,
+        ).to(args.device)
     else:
-        model = TourClassifier
-    model = model(
-        n_classes1=6, n_classes2=18, n_classes3=128,
-        text_model_name=args.text_model, image_model_name=args.image_model, device=args.device,
-        dropout=args.dropout
-    ).to(args.device)
+        model = TourClassifier(
+            n_classes1=6, n_classes2=18, n_classes3=128,
+            text_model_name=args.text_model, image_model_name=args.image_model, device=args.device,
+            dropout=args.dropout,
+        ).to(args.device)
 
     # loss_fn = nn.CrossEntropyLoss().to(args.device)
     loss_fn = FocalLoss().to(args.device)
