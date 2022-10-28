@@ -15,13 +15,29 @@ from adamp import AdamP
 
 from dataset import create_data_loader
 from loss import FocalLoss
-from model import TourClassifier, TourClassifier_Continuous, TourClassifier_Separate
+from model import TourClassifier, TourClassifier_Separate, TourClassifier_Separate_Continuous
 from utils import set_seeds, get_exp_dir, save_config, AverageMeter, calc_tour_acc, timeSince
 from set_wandb import wandb_init
 
 
 PATH_BASE = './'
 PATH_DATA = osp.join(PATH_BASE, 'data')
+
+
+def get_loss_coef(loss1, loss2, loss3):
+    l1, l2, l3 = loss1.item(), loss2.item(), loss3.item()
+    loss_coef = 1.0
+    if l1==0 and l2!=0 and l3==0: # O X O
+        loss_coef = 1.5
+    elif l1!=0:
+        if l2==0:
+            if l3==0:             # X O O
+                loss_coef = 1.5
+            else:                 # X O X
+                loss_coef = 2.0
+        elif l3==0:               # X X O
+            loss_coef = 2.0
+    return loss_coef
 
 
 def train_epoch(model, data_loader, loss_fn, optimizer, scheduler, n_examples, epoch,
@@ -62,6 +78,8 @@ def train_epoch(model, data_loader, loss_fn, optimizer, scheduler, n_examples, e
             loss2 = loss_fn(outputs2, cats2)
             loss3 = loss_fn(outputs3, cats3)
             loss = loss1 * lambda_cat1 + loss2 * lambda_cat2 + loss3 * lambda_cat3
+            # loss_coef = get_loss_coef(loss1, loss2, loss3)
+            # loss = loss1 * (lambda_cat1*loss_coef) + loss2 * (lambda_cat2*loss_coef) + loss3 * (lambda_cat3*loss_coef)
             losses.update(loss.item(), batch_size)
         
         scaler.scale(loss).backward()
@@ -137,23 +155,33 @@ def validate(model, data_loader, loss_fn, device, lambda_cat1, lambda_cat2, lamb
             loss2 = loss_fn(outputs2, cats2)
             loss3 = loss_fn(outputs3, cats3)
             loss = loss1 * lambda_cat1 + loss2 * lambda_cat2 + loss3 * lambda_cat3
+            # loss_coef = get_loss_coef(loss1, loss2, loss3)
+            # loss = loss1 * (lambda_cat1*loss_coef) + loss2 * (lambda_cat2*loss_coef) + loss3 * (lambda_cat3*loss_coef)
             losses.append(loss.item())
 
             if cnt == 0:
                 cnt += 1
-                outputs3_arr = outputs3
-                cats3_arr = cats3
+                outputs_arr, outputs2_arr, outputs3_arr = outputs, outputs2, outputs3
+                cats1_arr, cats2_arr, cats3_arr = cats1, cats2, cats3
             else:
+                outputs_arr = torch.cat([outputs_arr, outputs], 0)
+                outputs2_arr = torch.cat([outputs2_arr, outputs2], 0)
                 outputs3_arr = torch.cat([outputs3_arr, outputs3], 0)
+                cats1_arr = torch.cat([cats1_arr, cats1], 0)
+                cats2_arr = torch.cat([cats2_arr, cats2], 0)
                 cats3_arr = torch.cat([cats3_arr, cats3], 0)
 
-    acc, f1_acc = calc_tour_acc(outputs3_arr, cats3_arr)
+    acc, f1_acc = calc_tour_acc(outputs_arr, cats1_arr)
+    acc2, f1_acc2 = calc_tour_acc(outputs2_arr, cats2_arr)
+    acc3, f1_acc3 = calc_tour_acc(outputs3_arr, cats3_arr)
 
     wandb.log({
-        'valid/loss': round(np.mean(losses),4), 'valid/acc': round(acc,4), 'valid/f1': round(f1_acc,4)
+        'valid/loss': round(np.mean(losses),4), 'valid/acc': round(acc3,4), 'valid/f1': round(f1_acc3,4),
+        'valid/acc_cat1': round(acc,4), 'valid/f1_cat1': round(f1_acc,4),
+        'valid/acc_cat2': round(acc2,4), 'valid/f1_cat2': round(f1_acc2,4),
     })
 
-    return acc, f1_acc, np.mean(losses)
+    return acc3, f1_acc3, np.mean(losses)
 
 
 def get_parser():
@@ -210,15 +238,15 @@ def main(args):
     feature_extractor = AutoFeatureExtractor.from_pretrained(args.image_model)
 
     train_data_loader = create_data_loader(
-        train, tokenizer, feature_extractor, args.max_len, args.batch_size, args.num_workers, shuffle_=True)
+        train, tokenizer, feature_extractor, args.max_len, args.batch_size, args.num_workers, mode='train')
     valid_data_loader = create_data_loader(
-        valid, tokenizer, feature_extractor, args.max_len, args.batch_size, args.num_workers)
+        valid, tokenizer, feature_extractor, args.max_len, args.batch_size, args.num_workers, mode='valid')
 
-    if args.continuous:
-        model = TourClassifier_Continuous(
+    if args.separate and args.continuous:
+        model = TourClassifier_Separate_Continuous(
             n_classes1=6, n_classes2=18, n_classes3=128,
             text_model_name=args.text_model, image_model_name=args.image_model, device=args.device,
-            dropout=args.dropout,
+            dropout=args.dropout, alpha=args.separate_alpha,
         ).to(args.device)
     elif args.separate:
         model = TourClassifier_Separate(
