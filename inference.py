@@ -11,7 +11,7 @@ import torch.nn as nn
 from transformers import AutoTokenizer, AutoFeatureExtractor
 
 from dataset import create_data_loader_test
-from model import TourClassifier, TourClassifier_Continuous, TourClassifier_Separate
+from model import TourClassifier, TourClassifier_Separate, TourClassifier_Separate_Continuous
 from utils import set_seeds, load_config
 
 
@@ -136,16 +136,21 @@ def get_parser():
     parser.add_argument('--path', nargs='+') # work_dirs/exp0/best.pt
     parser.add_argument('--multi_label', action='store_true')
     parser.add_argument('--mask_label', action='store_true')
+    parser.add_argument('--hflip', action='store_true') # only for 'soft' and 'hard' mode
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
     return args
 
 
-def main(args, train_config):
+def main(args, train_config, hflip=False):
     device = torch.device("cuda:0")
     
     if args.mode == 'valid':
-        df = pd.read_csv(osp.join(PATH_DATA, 'train_5fold.csv'))
+        if train_config.df_ver == 1:
+            df = 'train_5fold.csv'
+        elif train_config.df_ver == 2:
+            df = 'train_5fold_ver2.csv'
+        df = pd.read_csv(osp.join(PATH_DATA, df))
         df = df[df["kfold"] == train_config.fold].reset_index(drop=True)
     else:
         df = pd.read_csv(osp.join(PATH_DATA, 'test.csv'))
@@ -153,18 +158,26 @@ def main(args, train_config):
     tokenizer = AutoTokenizer.from_pretrained(train_config.text_model)
     feature_extractor = AutoFeatureExtractor.from_pretrained(train_config.image_model)
 
-    eval_data_loader = create_data_loader_test(df, tokenizer, feature_extractor, train_config.max_len)
-    if train_config.continuous:
-        model = TourClassifier_Continuous
+    eval_data_loader = create_data_loader_test(df, tokenizer, feature_extractor, train_config.max_len, hflip=hflip)
+    
+    if train_config.separate and train_config.continuous:
+        model = TourClassifier_Separate_Continuous(
+            n_classes1=6, n_classes2=18, n_classes3=128,
+            text_model_name=train_config.text_model, image_model_name=train_config.image_model, device=device,
+            dropout=train_config.dropout, alpha=train_config.separate_alpha,
+        ).to(device)
     elif train_config.separate:
-        model = TourClassifier_Separate
+        model = TourClassifier_Separate(
+            n_classes1=6, n_classes2=18, n_classes3=128,
+            text_model_name=train_config.text_model, image_model_name=train_config.image_model, device=device,
+            dropout=train_config.dropout, alpha=train_config.separate_alpha,
+        ).to(device)
     else:
-        model = TourClassifier
-    model = model(
-        n_classes1=6, n_classes2=18, n_classes3=128,
-        text_model_name=train_config.text_model, image_model_name=train_config.image_model, device=device,
-        dropout=train_config.dropout,
-    ).to(device)
+        model = TourClassifier(
+            n_classes1=6, n_classes2=18, n_classes3=128,
+            text_model_name=train_config.text_model, image_model_name=train_config.image_model, device=device,
+            dropout=train_config.dropout,
+        ).to(device)
     model.load_state_dict(torch.load(osp.join(args.work_dir_exp, args.ckpt)))
 
     preds_arr, preds_arr2, preds_arr3 = inference(model, eval_data_loader, device, args.multi_label, args.mask_label, args.mode)
@@ -191,8 +204,16 @@ def main(args, train_config):
 
 if __name__ == '__main__':
     args = get_parser()
+    
     ensemble = []
     ensemble_file_name = args.mode
+    if args.hflip:
+        ensemble_file_name += '_hflip'
+    if args.multi_label:
+        ensemble_file_name += '_multi'
+    if args.mask_label:
+        ensemble_file_name += '_mask'
+    
     for i in range(len(args.path)):
         path = args.path[i] # work_dirs/exp0/best.pt
         args.exp = path.split('/')[-2] # exp0
@@ -203,9 +224,10 @@ if __name__ == '__main__':
         train_config = load_config(osp.join(args.work_dir_exp, 'config.yaml'))
 
         if args.mode in ['soft', 'hard']:
-            out = main(args, train_config)
-            ensemble.append(out)
             ensemble_file_name += '_' + args.exp + args.ckpt.split('.')[0]
+            for hflip in range(args.hflip + 1):
+                out = main(args, train_config, hflip=hflip)
+                ensemble.append(out)
         else:
             main(args, train_config)
 
