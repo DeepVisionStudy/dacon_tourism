@@ -171,9 +171,9 @@ def validate(model, data_loader, loss_fn, device, lambda_cat1, lambda_cat2, lamb
                 cats2_arr = torch.cat([cats2_arr, cats2], 0)
                 cats3_arr = torch.cat([cats3_arr, cats3], 0)
 
-    acc, f1_acc = calc_tour_acc(outputs_arr, cats1_arr)
-    acc2, f1_acc2 = calc_tour_acc(outputs2_arr, cats2_arr)
-    acc3, f1_acc3 = calc_tour_acc(outputs3_arr, cats3_arr)
+    acc, f1_acc = calc_tour_acc(outputs_arr, cats1_arr, report=True)
+    acc2, f1_acc2 = calc_tour_acc(outputs2_arr, cats2_arr, report=True)
+    acc3, f1_acc3 = calc_tour_acc(outputs3_arr, cats3_arr, report=True)
 
     wandb.log({
         'valid/loss': round(np.mean(losses),4), 'valid/acc': round(acc3,4), 'valid/f1': round(f1_acc3,4),
