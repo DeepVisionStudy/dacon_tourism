@@ -211,6 +211,12 @@ def get_parser():
     parser.add_argument('--lambda_cat1', type=float, default=0.05)
     parser.add_argument('--lambda_cat2', type=float, default=0.1)
     parser.add_argument('--lambda_cat3', type=float, default=0.85)
+    parser.add_argument('--lambda_image_lr', type=float, default=2)
+    parser.add_argument('--lambda_linear_lr', type=float, default=5)
+    
+    parser.add_argument('--weight_decay', type=float, default=0.01)
+    parser.add_argument('--lambda_text_wd', type=float, default=20)
+    parser.add_argument('--lambda_image_wd', type=float, default=10)
 
     parser.add_argument('--warmup_cycle', type=int, default=2)
     parser.add_argument('--warmup_ratio', type=float, default=0.05)
@@ -264,7 +270,21 @@ def main(args):
     # loss_fn = nn.CrossEntropyLoss().to(args.device)
     loss_fn = FocalLoss().to(args.device)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
+    lr = args.learning_rate
+    lr_linear = lr * args.lambda_linear_lr
+    lr_image = lr * args.lambda_image_lr
+    lr_linear_image = lr_linear * args.lambda_image_lr
+    params = [
+        {"params": model.text_model.parameters(), "lr": lr, "weight_decay": args.weight_decay*args.lambda_text_wd},
+        {"params": model.text_cls.parameters(), "lr": lr_linear, "weight_decay": args.weight_decay},
+        {"params": model.text_cls2.parameters(), "lr": lr_linear, "weight_decay": args.weight_decay},
+        {"params": model.text_cls3.parameters(), "lr": lr_linear, "weight_decay": args.weight_decay},
+        {"params": model.image_model.parameters(), "lr": lr_image, "weight_decay": args.weight_decay*args.lambda_image_wd},
+        {"params": model.image_cls.parameters(), "lr": lr_linear_image, "weight_decay": args.weight_decay},
+        {"params": model.image_cls2.parameters(), "lr": lr_linear_image, "weight_decay": args.weight_decay},
+        {"params": model.image_cls3.parameters(), "lr": lr_linear_image, "weight_decay": args.weight_decay},
+    ]
+    optimizer = torch.optim.AdamW(params)
     # optimizer = AdamP(model.parameters(), lr=args.learning_rate)
     
     scaler = GradScaler()
