@@ -62,10 +62,8 @@ class TourClassifier_Separate(nn.Module):
         self.text_cls2 = self._get_cls(self.text_model.config.hidden_size, n_classes2)
         self.text_cls3 = self._get_cls(self.text_model.config.hidden_size, n_classes3)
 
-        if 'vit' in image_model_name:
+        if 'vit' in image_model_name or 'swinv2' in image_model_name:
             image_hidden_size = self.image_model.config.hidden_size
-        elif image_model_name == 'microsoft/swin-base-patch4-window7-224-in22k':
-            image_hidden_size = 1024
         else:
             image_hidden_size = self.image_model.config.hidden_sizes[-1]
         self.image_cls = self._get_cls(image_hidden_size, n_classes1)
@@ -104,66 +102,3 @@ class TourClassifier_Separate(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_size, target_size),
         )
-
-
-class TourClassifier_Separate_Continuous(nn.Module):
-    def __init__(self, n_classes1, n_classes2, n_classes3, text_model_name, image_model_name, device, dropout, alpha):
-        super(TourClassifier_Separate_Continuous, self).__init__()
-        self.text_model = AutoModel.from_pretrained(text_model_name).to(device)
-        self.image_model = AutoModel.from_pretrained(image_model_name).to(device)
-        
-        self.text_model.gradient_checkpointing_enable()
-        self.image_model.gradient_checkpointing_enable()
-
-        self.dropout_ratio = dropout
-        self.drop = nn.Dropout(p=dropout)
-
-        self.text_body, self.text_head = self._get_body_head(self.text_model.config.hidden_size, n_classes1)
-        self.text_body2, self.text_head2 = self._get_body_head(self.text_model.config.hidden_size, n_classes2)
-        self.text_body3, self.text_head3 = self._get_body_head(self.text_model.config.hidden_size, n_classes3)
-
-        if 'vit' in image_model_name:
-            image_hidden_size = self.image_model.config.hidden_size
-        elif image_model_name == 'microsoft/swin-base-patch4-window7-224-in22k':
-            image_hidden_size = 1024
-        else:
-            image_hidden_size = self.image_model.config.hidden_sizes[-1]
-        self.image_body, self.image_head = self._get_body_head(image_hidden_size, n_classes1)
-        self.image_body2, self.image_head2 = self._get_body_head(image_hidden_size, n_classes2)
-        self.image_body3, self.image_head3 = self._get_body_head(image_hidden_size, n_classes3)
-
-        self.alpha = alpha
-
-    def forward(self, input_ids, attention_mask, pixel_values):
-        text_output = self.text_model(input_ids=input_ids, attention_mask=attention_mask)
-        image_output = self.image_model(pixel_values=pixel_values)
-        
-        text_output = self.drop(text_output.pooler_output)
-        image_output = self.drop(image_output.pooler_output)
-        image_output = torch.squeeze(image_output)
-
-        text_output = self.text_body(text_output)
-        text_out1 = self.text_head(text_output)
-        text_out2 = self.text_head2(self.text_body2(text_output)) # cat1 > cat2
-        text_out3 = self.text_head3(self.text_body3(text_output)) # cat1 > cat3
-
-        image_output = self.image_body(image_output)
-        image_out1 = self.image_head(image_output)
-        image_out2 = self.image_head2(self.image_body2(image_output)) # cat1 > cat2
-        image_out3 = self.image_head3(self.image_body3(image_output)) # cat1 > cat3
-
-        out1 = torch.add(text_out1, image_out1, alpha=self.alpha)
-        out2 = torch.add(text_out2, image_out2, alpha=self.alpha)
-        out3 = torch.add(text_out3, image_out3, alpha=self.alpha)
-
-        return out1, out2, out3
-
-    def _get_body_head(self, hidden_size, target_size):
-        body = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size),
-            nn.LayerNorm(hidden_size),
-            nn.Dropout(p=self.dropout_ratio),
-            nn.ReLU(),
-        )
-        head = nn.Linear(hidden_size, target_size)
-        return body, head

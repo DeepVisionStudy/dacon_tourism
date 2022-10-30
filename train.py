@@ -15,7 +15,7 @@ from adamp import AdamP
 
 from dataset import create_data_loader
 from loss import FocalLoss
-from model import TourClassifier, TourClassifier_Separate, TourClassifier_Separate_Continuous
+from model import TourClassifier, TourClassifier_Separate
 from utils import set_seeds, get_exp_dir, save_config, AverageMeter, calc_tour_acc, timeSince
 from set_wandb import wandb_init
 
@@ -194,7 +194,6 @@ def get_parser():
     
     parser.add_argument('--df_ver', type=int, default=1)
 
-    parser.add_argument('--continuous', action='store_true')
     parser.add_argument('--separate', action='store_true')
     parser.add_argument('--separate_alpha', type=float, default=0.2)
     
@@ -211,12 +210,12 @@ def get_parser():
     parser.add_argument('--lambda_cat1', type=float, default=0.05)
     parser.add_argument('--lambda_cat2', type=float, default=0.1)
     parser.add_argument('--lambda_cat3', type=float, default=0.85)
-    parser.add_argument('--lambda_image_lr', type=float, default=2)
-    parser.add_argument('--lambda_linear_lr', type=float, default=5)
+    parser.add_argument('--lambda_image_lr', type=float, default=1)
+    parser.add_argument('--lambda_linear_lr', type=float, default=1)
     
-    parser.add_argument('--weight_decay', type=float, default=0.01)
-    parser.add_argument('--lambda_text_wd', type=float, default=20)
-    parser.add_argument('--lambda_image_wd', type=float, default=10)
+    parser.add_argument('--weight_decay', type=float, default=0)
+    parser.add_argument('--lambda_text_wd', type=float, default=1)
+    parser.add_argument('--lambda_image_wd', type=float, default=1)
 
     parser.add_argument('--warmup_cycle', type=int, default=2)
     parser.add_argument('--warmup_ratio', type=float, default=0.05)
@@ -248,13 +247,7 @@ def main(args):
     valid_data_loader = create_data_loader(
         valid, tokenizer, feature_extractor, args.max_len, args.batch_size, args.num_workers, mode='valid')
 
-    if args.separate and args.continuous:
-        model = TourClassifier_Separate_Continuous(
-            n_classes1=6, n_classes2=18, n_classes3=128,
-            text_model_name=args.text_model, image_model_name=args.image_model, device=args.device,
-            dropout=args.dropout, alpha=args.separate_alpha,
-        ).to(args.device)
-    elif args.separate:
+    if args.separate:
         model = TourClassifier_Separate(
             n_classes1=6, n_classes2=18, n_classes3=128,
             text_model_name=args.text_model, image_model_name=args.image_model, device=args.device,
