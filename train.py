@@ -8,13 +8,14 @@ from tqdm import tqdm
 
 import torch
 import torch.nn as nn
+from torch.cuda.amp import autocast, GradScaler
 from transformers import AutoTokenizer, AutoFeatureExtractor
 from transformers.optimization import get_cosine_schedule_with_warmup
 from adamp import AdamP
 
 from dataset import create_data_loader
 from loss import FocalLoss
-from model import TourClassifier, TourClassifier_Continuous
+from model import TourClassifier, TourClassifier_Separate
 from utils import set_seeds, get_exp_dir, save_config, AverageMeter, calc_tour_acc, timeSince
 from set_wandb import wandb_init
 
@@ -23,8 +24,24 @@ PATH_BASE = './'
 PATH_DATA = osp.join(PATH_BASE, 'data')
 
 
+def get_loss_coef(loss1, loss2, loss3):
+    l1, l2, l3 = loss1.item(), loss2.item(), loss3.item()
+    loss_coef = 1.0
+    if l1==0 and l2!=0 and l3==0: # O X O
+        loss_coef = 1.5
+    elif l1!=0:
+        if l2==0:
+            if l3==0:             # X O O
+                loss_coef = 1.5
+            else:                 # X O X
+                loss_coef = 2.0
+        elif l3==0:               # X X O
+            loss_coef = 2.0
+    return loss_coef
+
+
 def train_epoch(model, data_loader, loss_fn, optimizer, scheduler, n_examples, epoch,
-                device, lambda_cat1, lambda_cat2, lambda_cat3, val_freq):
+                device, lambda_cat1, lambda_cat2, lambda_cat3, val_freq, scaler):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -34,8 +51,7 @@ def train_epoch(model, data_loader, loss_fn, optimizer, scheduler, n_examples, e
     start = end = time.time()
 
     model = model.train()
-    wandb.watch(model)
-    # wandb.log({'learning_rate': round(scheduler.get_last_lr()[0],4)}, commit=False)
+    # wandb.watch(model)
     correct_predictions = 0
     for step, d in enumerate(data_loader):
         data_time.update(time.time() - end)
@@ -44,27 +60,41 @@ def train_epoch(model, data_loader, loss_fn, optimizer, scheduler, n_examples, e
         input_ids = d["input_ids"].to(device)
         attention_mask = d["attention_mask"].to(device)
         pixel_values = d['pixel_values'].to(device)
+        # pixel_values = torch.zeros_like(d['pixel_values']).to(device)
+        
         cats1 = d["cats1"].to(device)
         cats2 = d["cats2"].to(device)
         cats3 = d["cats3"].to(device)
+        
+        with autocast():
+            outputs, outputs2, outputs3 = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                pixel_values=pixel_values
+            )
+            _, preds = torch.max(outputs3, dim=1)
 
-        outputs, outputs2, outputs3 = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            pixel_values=pixel_values
-        )
-        _, preds = torch.max(outputs3, dim=1)
-
-        loss1 = loss_fn(outputs, cats1)
-        loss2 = loss_fn(outputs2, cats2)
-        loss3 = loss_fn(outputs3, cats3)
-        loss = loss1 * lambda_cat1 + loss2 * lambda_cat2 + loss3 * lambda_cat3
-        losses.update(loss.item(), batch_size)
-        loss.backward()
+            loss1 = loss_fn(outputs, cats1)
+            loss2 = loss_fn(outputs2, cats2)
+            loss3 = loss_fn(outputs3, cats3)
+            loss = loss1 * lambda_cat1 + loss2 * lambda_cat2 + loss3 * lambda_cat3
+            # loss_coef = get_loss_coef(loss1, loss2, loss3)
+            # loss = loss1 * (lambda_cat1*loss_coef) + loss2 * (lambda_cat2*loss_coef) + loss3 * (lambda_cat3*loss_coef)
+            losses.update(loss.item(), batch_size)
+        
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
         nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
         scheduler.step()
         optimizer.zero_grad()
+
+        # loss.backward()
+        # nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        # optimizer.step()
+        # scheduler.step()
+        # optimizer.zero_grad()
 
         correct_predictions += torch.sum(preds == cats3)
         batch_time.update(time.time() - end)
@@ -111,6 +141,7 @@ def validate(model, data_loader, loss_fn, device, lambda_cat1, lambda_cat2, lamb
             input_ids = d["input_ids"].to(device)
             attention_mask = d["attention_mask"].to(device)
             pixel_values = d['pixel_values'].to(device)
+
             cats1 = d["cats1"].to(device)
             cats2 = d["cats2"].to(device)
             cats3 = d["cats3"].to(device)
@@ -124,23 +155,33 @@ def validate(model, data_loader, loss_fn, device, lambda_cat1, lambda_cat2, lamb
             loss2 = loss_fn(outputs2, cats2)
             loss3 = loss_fn(outputs3, cats3)
             loss = loss1 * lambda_cat1 + loss2 * lambda_cat2 + loss3 * lambda_cat3
+            # loss_coef = get_loss_coef(loss1, loss2, loss3)
+            # loss = loss1 * (lambda_cat1*loss_coef) + loss2 * (lambda_cat2*loss_coef) + loss3 * (lambda_cat3*loss_coef)
             losses.append(loss.item())
 
             if cnt == 0:
                 cnt += 1
-                outputs3_arr = outputs3
-                cats3_arr = cats3
+                outputs_arr, outputs2_arr, outputs3_arr = outputs, outputs2, outputs3
+                cats1_arr, cats2_arr, cats3_arr = cats1, cats2, cats3
             else:
+                outputs_arr = torch.cat([outputs_arr, outputs], 0)
+                outputs2_arr = torch.cat([outputs2_arr, outputs2], 0)
                 outputs3_arr = torch.cat([outputs3_arr, outputs3], 0)
+                cats1_arr = torch.cat([cats1_arr, cats1], 0)
+                cats2_arr = torch.cat([cats2_arr, cats2], 0)
                 cats3_arr = torch.cat([cats3_arr, cats3], 0)
 
-    acc, f1_acc = calc_tour_acc(outputs3_arr, cats3_arr)
+    acc, f1_acc = calc_tour_acc(outputs_arr, cats1_arr, report=True)
+    acc2, f1_acc2 = calc_tour_acc(outputs2_arr, cats2_arr, report=True)
+    acc3, f1_acc3 = calc_tour_acc(outputs3_arr, cats3_arr, report=True)
 
     wandb.log({
-        'valid/loss': round(np.mean(losses),4), 'valid/acc': round(acc,4), 'valid/f1': round(f1_acc,4)
+        'valid/loss': round(np.mean(losses),4), 'valid/acc': round(acc3,4), 'valid/f1': round(f1_acc3,4),
+        'valid/acc_cat1': round(acc,4), 'valid/f1_cat1': round(f1_acc,4),
+        'valid/acc_cat2': round(acc2,4), 'valid/f1_cat2': round(f1_acc2,4),
     })
 
-    return acc, f1_acc, np.mean(losses)
+    return acc3, f1_acc3, np.mean(losses)
 
 
 def get_parser():
@@ -150,10 +191,14 @@ def get_parser():
     parser.add_argument('--val_freq', type=int, default=50)
     parser.add_argument('--save_freq', type=int, default=5)
     parser.add_argument('--work_dir', type=str, default='./work_dirs')
+    
+    parser.add_argument('--df_ver', type=int, default=1)
 
-    parser.add_argument('--continuous', action='store_true')
-    parser.add_argument('--text_model', type=str, default="klue/roberta-small")
-    parser.add_argument('--image_model', type=str, default="microsoft/beit-base-patch16-224-pt22k-ft22k") # "google/vit-base-patch16-224-in21k" "microsoft/beit-base-patch16-384"
+    parser.add_argument('--separate', action='store_true')
+    parser.add_argument('--separate_alpha', type=float, default=0.2)
+    
+    parser.add_argument('--text_model', type=str, default="klue/roberta-base")
+    parser.add_argument('--image_model', type=str, default="google/vit-base-patch16-224-in21k")
     parser.add_argument('--max_len', type=int, default=256)
     parser.add_argument('--dropout', type=float, default=0.1)
 
@@ -165,6 +210,12 @@ def get_parser():
     parser.add_argument('--lambda_cat1', type=float, default=0.05)
     parser.add_argument('--lambda_cat2', type=float, default=0.1)
     parser.add_argument('--lambda_cat3', type=float, default=0.85)
+    parser.add_argument('--lambda_image_lr', type=float, default=1)
+    parser.add_argument('--lambda_linear_lr', type=float, default=1)
+    
+    parser.add_argument('--weight_decay', type=float, default=0)
+    parser.add_argument('--lambda_text_wd', type=float, default=1)
+    parser.add_argument('--lambda_image_wd', type=float, default=1)
 
     parser.add_argument('--warmup_cycle', type=int, default=2)
     parser.add_argument('--warmup_ratio', type=float, default=0.05)
@@ -180,7 +231,11 @@ def get_parser():
 def main(args):
     args.device = torch.device("cuda:0")
 
-    df = pd.read_csv(osp.join(PATH_DATA, 'train_5fold.csv'))
+    if args.df_ver == 1:
+        df = 'train_5fold.csv'
+    elif args.df_ver == 2:
+        df = 'train_5fold_ver2.csv'
+    df = pd.read_csv(osp.join(PATH_DATA, df))
     train = df[df["kfold"] != args.fold].reset_index(drop=True)
     valid = df[df["kfold"] == args.fold].reset_index(drop=True)
 
@@ -188,25 +243,44 @@ def main(args):
     feature_extractor = AutoFeatureExtractor.from_pretrained(args.image_model)
 
     train_data_loader = create_data_loader(
-        train, tokenizer, feature_extractor, args.max_len, args.batch_size, args.num_workers, shuffle_=True)
+        train, tokenizer, feature_extractor, args.max_len, args.batch_size, args.num_workers, mode='train')
     valid_data_loader = create_data_loader(
-        valid, tokenizer, feature_extractor, args.max_len, args.batch_size, args.num_workers)
+        valid, tokenizer, feature_extractor, args.max_len, args.batch_size, args.num_workers, mode='valid')
 
-    if args.continuous:
-        model = TourClassifier_Continuous
+    if args.separate:
+        model = TourClassifier_Separate(
+            n_classes1=6, n_classes2=18, n_classes3=128,
+            text_model_name=args.text_model, image_model_name=args.image_model, device=args.device,
+            dropout=args.dropout, alpha=args.separate_alpha,
+        ).to(args.device)
     else:
-        model = TourClassifier
-    model = model(
-        n_classes1=6, n_classes2=18, n_classes3=128,
-        text_model_name=args.text_model, image_model_name=args.image_model, device=args.device,
-        dropout=args.dropout
-    ).to(args.device)
+        model = TourClassifier(
+            n_classes1=6, n_classes2=18, n_classes3=128,
+            text_model_name=args.text_model, image_model_name=args.image_model, device=args.device,
+            dropout=args.dropout,
+        ).to(args.device)
 
     # loss_fn = nn.CrossEntropyLoss().to(args.device)
     loss_fn = FocalLoss().to(args.device)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
+    lr = args.learning_rate
+    lr_linear = lr * args.lambda_linear_lr
+    lr_image = lr * args.lambda_image_lr
+    lr_linear_image = lr_linear * args.lambda_image_lr
+    params = [
+        {"params": model.text_model.parameters(), "lr": lr, "weight_decay": args.weight_decay*args.lambda_text_wd},
+        {"params": model.text_cls.parameters(), "lr": lr_linear, "weight_decay": args.weight_decay},
+        {"params": model.text_cls2.parameters(), "lr": lr_linear, "weight_decay": args.weight_decay},
+        {"params": model.text_cls3.parameters(), "lr": lr_linear, "weight_decay": args.weight_decay},
+        {"params": model.image_model.parameters(), "lr": lr_image, "weight_decay": args.weight_decay*args.lambda_image_wd},
+        {"params": model.image_cls.parameters(), "lr": lr_linear_image, "weight_decay": args.weight_decay},
+        {"params": model.image_cls2.parameters(), "lr": lr_linear_image, "weight_decay": args.weight_decay},
+        {"params": model.image_cls3.parameters(), "lr": lr_linear_image, "weight_decay": args.weight_decay},
+    ]
+    optimizer = torch.optim.AdamW(params)
     # optimizer = AdamP(model.parameters(), lr=args.learning_rate)
+    
+    scaler = GradScaler()
 
     total_steps = len(train_data_loader) * args.epochs
     scheduler = get_cosine_schedule_with_warmup(
@@ -223,7 +297,7 @@ def main(args):
         print('-' * 10)
         train_acc, train_loss = train_epoch(
             model, train_data_loader, loss_fn, optimizer, scheduler, len(train), epoch, args.device,
-            args.lambda_cat1, args.lambda_cat2, args.lambda_cat3, args.val_freq
+            args.lambda_cat1, args.lambda_cat2, args.lambda_cat3, args.val_freq, scaler,
         )
         validate_acc, validate_f1, validate_loss = validate(
             model, valid_data_loader, loss_fn, args.device,

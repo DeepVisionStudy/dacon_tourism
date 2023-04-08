@@ -1,3 +1,4 @@
+import os
 import argparse
 import numpy as np
 import pandas as pd
@@ -10,12 +11,14 @@ import torch.nn as nn
 from transformers import AutoTokenizer, AutoFeatureExtractor
 
 from dataset import create_data_loader_test
-from model import TourClassifier, TourClassifier_Continuous
+from model import TourClassifier, TourClassifier_Separate
 from utils import set_seeds, load_config
 
 
 PATH_BASE = './'
 PATH_DATA = osp.join(PATH_BASE, 'data')
+PATH_SUBMIT = osp.join(PATH_BASE, 'ensemble')
+os.makedirs(PATH_SUBMIT, exist_ok=True)
 
 df = pd.read_csv(osp.join(PATH_DATA, 'train.csv'))
 
@@ -84,7 +87,7 @@ def mask_with_before_pred(before_pred, logit, dict):
     return output
 
 
-def inference(model, data_loader, device, multi_label, mask_label):
+def inference(model, data_loader, device, multi_label, mask_label, mode):
     model = model.eval()
     preds_arr, preds_arr2, preds_arr3 = [], [], []
     for d in tqdm(data_loader):
@@ -102,60 +105,76 @@ def inference(model, data_loader, device, multi_label, mask_label):
                 outputs2 = consider_multi_label(outputs, outputs2, outputs3, 'cat2', cat2_to_cat1_dict, cat2_to_cat3_dict)
                 outputs3 = consider_multi_label(outputs, outputs2, outputs3, 'cat3', cat3_to_cat1_dict, cat3_to_cat2_dict)
             
-            _, preds = torch.max(outputs, dim=1)
-            if mask_label:
-                outputs2 = mask_with_before_pred(preds, outputs2, cat1_to_cat2_dict)
-            _, preds2 = torch.max(outputs2, dim=1)
-            if mask_label:
-                outputs3 = mask_with_before_pred(preds2, outputs3, cat2_to_cat3_dict)
-            _, preds3 = torch.max(outputs3, dim=1)
+            if mode == 'soft':
+                preds_arr.append(np.squeeze(outputs.cpu().numpy()))
+                preds_arr2.append(np.squeeze(outputs2.cpu().numpy()))
+                preds_arr3.append(np.squeeze(outputs3.cpu().numpy()))
+            else:
+                _, preds = torch.max(outputs, dim=1)
+                if mask_label: outputs2 = mask_with_before_pred(preds, outputs2, cat1_to_cat2_dict)
+                _, preds2 = torch.max(outputs2, dim=1)
+                if mask_label: outputs3 = mask_with_before_pred(preds2, outputs3, cat2_to_cat3_dict)
+                _, preds3 = torch.max(outputs3, dim=1)
 
-            preds_arr.append(preds.cpu().numpy()[0])
-            preds_arr2.append(preds2.cpu().numpy()[0])
-            preds_arr3.append(preds3.cpu().numpy()[0])
+                preds_arr.append(np.squeeze(preds.cpu().numpy()))
+                preds_arr2.append(np.squeeze(preds2.cpu().numpy()))
+                preds_arr3.append(np.squeeze(preds3.cpu().numpy()))
 
     return preds_arr, preds_arr2, preds_arr3
 
 
+def save(pred_arr, save_path):
+    sample_submission = pd.read_csv(osp.join(PATH_DATA, 'sample_submission.csv'))
+    for i in range(len(pred_arr)):
+        sample_submission.loc[i, 'cat3'] = cat3_labels[pred_arr[i]]
+    sample_submission.to_csv(save_path, index=False)
+
+
 def get_parser():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', type=str, default='test')
+    parser.add_argument('--mode', type=str, default='test') # valid test soft hard
     parser.add_argument('--path', nargs='+') # work_dirs/exp0/best.pt
     parser.add_argument('--multi_label', action='store_true')
     parser.add_argument('--mask_label', action='store_true')
+    parser.add_argument('--hflip', action='store_true') # only for 'soft' and 'hard' mode
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
     return args
 
 
-def main(args, train_config):
-    train_df = pd.read_csv(osp.join(PATH_DATA, 'train.csv'))
-    cat3_labels = sorted(list(set(train_df['cat3'].values.tolist())))
-
+def main(args, train_config, hflip=False):
     device = torch.device("cuda:0")
     
     if args.mode == 'valid':
-        df = pd.read_csv(osp.join(PATH_DATA, 'train_5fold.csv'))
+        if train_config.df_ver == 1:
+            df = 'train_5fold.csv'
+        elif train_config.df_ver == 2:
+            df = 'train_5fold_ver2.csv'
+        df = pd.read_csv(osp.join(PATH_DATA, df))
         df = df[df["kfold"] == train_config.fold].reset_index(drop=True)
-    elif args.mode == 'test':
+    else:
         df = pd.read_csv(osp.join(PATH_DATA, 'test.csv'))
 
     tokenizer = AutoTokenizer.from_pretrained(train_config.text_model)
     feature_extractor = AutoFeatureExtractor.from_pretrained(train_config.image_model)
 
-    eval_data_loader = create_data_loader_test(df, tokenizer, feature_extractor, train_config.max_len)
-    if train_config.continuous:
-        model = TourClassifier_Continuous
+    eval_data_loader = create_data_loader_test(df, tokenizer, feature_extractor, train_config.max_len, hflip=hflip)
+    
+    if train_config.separate:
+        model = TourClassifier_Separate(
+            n_classes1=6, n_classes2=18, n_classes3=128,
+            text_model_name=train_config.text_model, image_model_name=train_config.image_model, device=device,
+            dropout=train_config.dropout, alpha=train_config.separate_alpha,
+        ).to(device)
     else:
-        model = TourClassifier
-    model = model(
-        n_classes1=6, n_classes2=18, n_classes3=128,
-        text_model_name=train_config.text_model, image_model_name=train_config.image_model, device=device,
-        dropout=train_config.dropout,
-    ).to(device)
+        model = TourClassifier(
+            n_classes1=6, n_classes2=18, n_classes3=128,
+            text_model_name=train_config.text_model, image_model_name=train_config.image_model, device=device,
+            dropout=train_config.dropout,
+        ).to(device)
     model.load_state_dict(torch.load(osp.join(args.work_dir_exp, args.ckpt)))
 
-    preds_arr, preds_arr2, preds_arr3 = inference(model, eval_data_loader, device, args.multi_label, args.mask_label)
+    preds_arr, preds_arr2, preds_arr3 = inference(model, eval_data_loader, device, args.multi_label, args.mask_label, args.mode)
     
     if args.mode == 'valid':
         for col, arr in zip(['cat1','cat2','cat3'], [preds_arr, preds_arr2, preds_arr3]):
@@ -168,17 +187,27 @@ def main(args, train_config):
             # print(classification_report(gt, pred))
 
     elif args.mode == 'test':
-        sample_submission = pd.read_csv(osp.join(PATH_DATA, 'sample_submission.csv'))
-        for i in range(len(preds_arr3)):
-            sample_submission.loc[i, 'cat3'] = cat3_labels[preds_arr3[i]]
         save_path = f'submit_{args.exp}_' + args.ckpt.split('.')[0]
         if args.multi_label: save_path += '_multi'
         if args.mask_label: save_path += '_mask'
-        sample_submission.to_csv(osp.join(args.work_dir_exp, save_path+'.csv'), index=False)
+        save(preds_arr3, osp.join(args.work_dir_exp, save_path+'.csv'))
+    
+    elif args.mode in ['soft', 'hard']:
+        return preds_arr3
 
 
 if __name__ == '__main__':
     args = get_parser()
+    
+    ensemble = []
+    ensemble_file_name = args.mode
+    if args.hflip:
+        ensemble_file_name += '_hflip'
+    if args.multi_label:
+        ensemble_file_name += '_multi'
+    if args.mask_label:
+        ensemble_file_name += '_mask'
+    
     for i in range(len(args.path)):
         path = args.path[i] # work_dirs/exp0/best.pt
         args.exp = path.split('/')[-2] # exp0
@@ -187,4 +216,20 @@ if __name__ == '__main__':
         
         set_seeds(args.seed)
         train_config = load_config(osp.join(args.work_dir_exp, 'config.yaml'))
-        main(args, train_config)
+
+        if args.mode in ['soft', 'hard']:
+            ensemble_file_name += '_' + args.exp + args.ckpt.split('.')[0]
+            for hflip in range(args.hflip + 1):
+                out = main(args, train_config, hflip=hflip)
+                ensemble.append(out)
+        else:
+            main(args, train_config)
+
+    ensemble_save_path = osp.join(PATH_SUBMIT, f'{ensemble_file_name}.csv')
+    if args.mode == 'soft':
+        preds_arr3 = np.argmax(np.sum(ensemble, axis=0), axis=1)
+        save(preds_arr3, ensemble_save_path)
+    elif args.mode == 'hard':
+        ensemble = np.array(ensemble)
+        preds_arr3 = [np.argmax(np.bincount(ensemble[:,i])) for i in range(ensemble.shape[1])]
+        save(preds_arr3, ensemble_save_path)

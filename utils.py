@@ -7,7 +7,7 @@ import torch
 import random
 import numpy as np
 from types import SimpleNamespace
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, classification_report
 
 
 def set_seeds(random_seed):
@@ -48,13 +48,15 @@ def load_config(config_dir):
     return SimpleNamespace(**config)
 
 
-def calc_tour_acc(pred, label):
+def calc_tour_acc(pred, label, report=False):
     _, idx = pred.max(1)
     
     acc = torch.eq(idx, label).sum().item() / idx.size()[0] 
     x = label.cpu().numpy()
     y = idx.cpu().numpy()
     f1_acc = f1_score(x, y, average='weighted')
+    if report:
+        print(classification_report(x, y, zero_division=1))
     return acc,f1_acc
 
 
